@@ -29,7 +29,7 @@ def transform_to_dataframe(raw_data):
 
 def load_to_postgres(df):
     """
-    Загружает DataFrame в таблицу exchange_rates в PostgreSQL.
+    Загружает DataFrame в таблицу exchange_rates используя паттерн UPSERT.
     """
     db_params = {
         'dbname': 'postgres',
@@ -39,24 +39,36 @@ def load_to_postgres(df):
         'port': '5432'
     }
     
-    conn = None     
+    conn = None 
+    
     try:
         conn = psycopg2.connect(**db_params)
-        cursor = conn.cursor() # Курсор нужен для выполнения SQL-команд
+        cursor = conn.cursor()
         print("\n[DB] Подключение к PostgreSQL успешно установлено.")
-
+        
         for index, row in df.iterrows():
-            insert_query = """
+            # Новый UPSERT запрос
+            upsert_query = """
                 INSERT INTO exchange_rates (date, currency, rate, nominal)
-                VALUES (%s, %s, %s, %s);
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (date, currency) 
+                DO UPDATE SET 
+                    rate = EXCLUDED.rate,
+                    nominal = EXCLUDED.nominal,
+                    loaded_at = NOW(); -- Обновляем время последней загрузки
             """
-            cursor.execute(insert_query, (row['date'], row['currency'], row['rate'], row['nominal']))
+            
+            cursor.execute(upsert_query, (row['date'], row['currency'], row['rate'], row['nominal']))
+        
         conn.commit()
-        print(f"[DB] Успешно загружено {len(df)} записей.")
+        print(f"[DB] Успешно обработано {len(df)} записей (INSERT/UPDATE).")
         
     except psycopg2.Error as e:
         print(f"[DB] Ошибка при работе с базой данных: {e}")
-        
+        # Если произошла ошибка, откатываем транзакцию
+        if conn is not None:
+            conn.rollback() 
+            
     finally:
         if conn is not None:
             cursor.close()
